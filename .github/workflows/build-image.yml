@@ -1,0 +1,283 @@
+name: Build Mastodon with Bird UI
+
+on:
+  schedule:
+    # Run every 6 hours to check for new upstream releases
+    - cron: '0 */6 * * *'
+  push:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+    inputs:
+      force_build:
+        description: 'Force rebuild even if tag already exists'
+        required: false
+        type: boolean
+        default: false
+      custom_tag:
+        description: 'Build a specific Mastodon tag (e.g., v4.3.0)'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.get-tag.outputs.tag }}
+      should_build: ${{ steps.check-build.outputs.should_build }}
+      image_name: ${{ steps.prep.outputs.image_name }}
+    steps:
+      - name: Prep Image Name
+        id: prep
+        run: |
+          IMAGE_NAME="ghcr.io/$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')"
+          echo "image_name=$IMAGE_NAME" >> $GITHUB_OUTPUT
+      - name: Get Target Tag
+        id: get-tag
+        run: |
+          if [ -n "${{ github.event.inputs.custom_tag }}" ]; then
+            TAG="${{ github.event.inputs.custom_tag }}"
+          else
+            # Fetch latest release tag from mastodon/mastodon
+            TAG=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" https://api.github.com/repos/mastodon/mastodon/releases/latest | jq -r .tag_name)
+          fi
+          
+          if [ -z "$TAG" ] || [ "$TAG" = "null" ]; then
+            echo "Error: Could not retrieve latest Mastodon tag" >&2
+            exit 1
+          fi
+          
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "Target Mastodon version tag: $TAG"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check if build is needed
+        id: check-build
+        run: |
+          TAG="${{ steps.get-tag.outputs.tag }}"
+          FORCE_BUILD="${{ github.event.inputs.force_build }}"
+          
+          if [ "$FORCE_BUILD" = "true" ] || [ "${{ github.event_name }}" = "push" ]; then
+            echo "Force build or push event detected. Proceeding to build."
+            echo "should_build=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          
+          # Check if tag exists in GHCR using docker buildx imagetools inspect
+          if docker buildx imagetools inspect ${{ steps.prep.outputs.image_name }}:${TAG} >/dev/null 2>&1; then
+            echo "Image tag $TAG already exists in GHCR. Skipping build."
+            echo "should_build=false" >> $GITHUB_OUTPUT
+          else
+            echo "Image tag $TAG does not exist in GHCR. Proceeding to build."
+            echo "should_build=true" >> $GITHUB_OUTPUT
+          fi
+
+  build:
+    needs: check
+    if: needs.check.outputs.should_build == 'true'
+    env:
+      IMAGE_NAME: ${{ needs.check.outputs.image_name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-24.04
+            arch: amd64
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Checkout Mastodon
+        uses: actions/checkout@v6
+        with:
+          repository: mastodon/mastodon
+          ref: ${{ needs.check.outputs.tag }}
+          path: mastodon
+
+      - name: Checkout Bird UI
+        uses: actions/checkout@v6
+        with:
+          repository: rollecode/mastodon-bird-ui
+          path: mastodon-bird-ui
+
+      - name: Install Bird UI to Mastodon
+        run: |
+          # Define and export a dummy chown function to prevent script failure on runner
+          chown() { :; }
+          export -f chown
+          
+          cd mastodon-bird-ui
+          # Make Bird UI the default theme using the -d flag.
+          # Omit -v (do not add accessible variations).
+          # Pipe "n" to answer the variations prompt.
+          echo "n" | bash scripts/install-to-mastodon.sh --path ../mastodon -d
+
+      - name: Revert modifications to original Mastodon locale files
+        run: |
+          cd mastodon
+          git checkout config/locales/en.yml config/locales/fi.yml
+
+      - name: Create separate locales file for Bird UI
+        run: |
+          cat <<'EOF' > mastodon/config/locales/bird-ui.yml
+          ar:
+            themes:
+              default: Mastodon Bird UI
+              mastodon-dark: Mastodon
+          bn:
+            themes:
+              default: Mastodon Bird UI
+              mastodon-dark: Mastodon
+          de:
+            themes:
+              default: Mastodon Bird UI
+              mastodon-dark: Mastodon
+          en:
+            themes:
+              default: Mastodon Bird UI
+              mastodon-dark: Mastodon
+          es:
+            themes:
+              default: Mastodon Bird UI
+              mastodon-dark: Mastodon
+          fi:
+            themes:
+              default: Mastodon Bird UI
+              mastodon-dark: Mastodon
+          fr:
+            themes:
+              default: Mastodon Bird UI
+              mastodon-dark: Mastodon
+          hi:
+            themes:
+              default: Mastodon Bird UI
+              mastodon-dark: Mastodon
+          id:
+            themes:
+              default: Mastodon Bird UI
+              mastodon-dark: Mastodon
+          it:
+            themes:
+              default: Mastodon Bird UI
+              mastodon-dark: Mastodon
+          ja:
+            themes:
+              default: Mastodon Bird UI
+              mastodon-dark: Mastodon
+          ko:
+            themes:
+              default: Mastodon Bird UI
+              mastodon-dark: Mastodon
+          nl:
+            themes:
+              default: Mastodon Bird UI
+              mastodon-dark: Mastodon
+          pt:
+            themes:
+              default: Mastodon Bird UI
+              mastodon-dark: Mastodon
+          ru:
+            themes:
+              default: Mastodon Bird UI
+              mastodon-dark: Mastodon
+          tr:
+            themes:
+              default: Mastodon Bird UI
+              mastodon-dark: Mastodon
+          zh-CN:
+            themes:
+              default: Mastodon Bird UI
+              mastodon-dark: Mastodon
+          zh-TW:
+            themes:
+              default: Mastodon Bird UI
+              mastodon-dark: Mastodon
+          zh-HK:
+            themes:
+              default: Mastodon Bird UI
+              mastodon-dark: Mastodon
+          EOF
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and Push by Digest
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: mastodon
+          file: mastodon/Dockerfile
+          platforms: ${{ matrix.platform }}
+          outputs: type=image,name=${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=build-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=build-${{ matrix.arch }}
+
+      - name: Export Digest
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload Digest Artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: digests-${{ matrix.arch }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    needs: [check, build]
+    runs-on: ubuntu-24.04
+    env:
+      IMAGE_NAME: ${{ needs.check.outputs.image_name }}
+    steps:
+      - name: Download Digest Artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: digests-*
+          path: /tmp/digests
+          merge-multiple: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create and Push Multi-Arch Manifest
+        run: |
+          cd /tmp/digests
+          
+          # Combine digests into the final multi-arch manifest
+          docker buildx imagetools create \
+            -t ${{ env.IMAGE_NAME }}:${{ needs.check.outputs.tag }} \
+            -t ${{ env.IMAGE_NAME }}:latest \
+            $(printf "${{ env.IMAGE_NAME }}@sha256:%s " *)
