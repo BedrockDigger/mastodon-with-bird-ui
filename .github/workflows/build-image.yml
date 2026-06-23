@@ -135,7 +135,7 @@ jobs:
 
       - name: Create separate locales file for Bird UI
         run: |
-          cat <<'EOF' > mastodon/config/locales/bird-ui.yml
+          cat <<'EOF' > mastodon/config/locales/zzz-bird-ui.yml
           ar:
             themes:
               default: Mastodon Bird UI
