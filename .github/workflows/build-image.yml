@@ -123,96 +123,48 @@ jobs:
           export -f chown
           
           cd mastodon-bird-ui
-          # Make Bird UI the default theme using the -d flag.
-          # Omit -v (do not add accessible variations).
-          # Pipe "n" to answer the variations prompt.
-          echo "n" | bash scripts/install-to-mastodon.sh --path ../mastodon -d
+          # Install Bird UI to Mastodon with all variations (-v) and set it as the default theme (-d)
+          bash scripts/install-to-mastodon.sh --path ../mastodon -v -d
 
-      - name: Revert modifications to original Mastodon locale files
+      - name: Add Bird UI locale entries to all locales
         run: |
-          cd mastodon
-          git checkout config/locales/en.yml config/locales/fi.yml
+          # Define add_locale_entry function as defined in install-to-mastodon.sh
+          add_locale_entry() {
+            local file="$1"
+            local key="$2"
+            local value="$3"
+            local lang="$4"
 
-      - name: Create separate locales file for Bird UI
-        run: |
-          cat <<'EOF' > mastodon/config/locales/zzz-bird-ui.yml
-          ar:
-            themes:
-              default: Mastodon Bird UI
-              mastodon-dark: Mastodon
-          bn:
-            themes:
-              default: Mastodon Bird UI
-              mastodon-dark: Mastodon
-          de:
-            themes:
-              default: Mastodon Bird UI
-              mastodon-dark: Mastodon
-          en:
-            themes:
-              default: Mastodon Bird UI
-              mastodon-dark: Mastodon
-          es:
-            themes:
-              default: Mastodon Bird UI
-              mastodon-dark: Mastodon
-          fi:
-            themes:
-              default: Mastodon Bird UI
-              mastodon-dark: Mastodon
-          fr:
-            themes:
-              default: Mastodon Bird UI
-              mastodon-dark: Mastodon
-          hi:
-            themes:
-              default: Mastodon Bird UI
-              mastodon-dark: Mastodon
-          id:
-            themes:
-              default: Mastodon Bird UI
-              mastodon-dark: Mastodon
-          it:
-            themes:
-              default: Mastodon Bird UI
-              mastodon-dark: Mastodon
-          ja:
-            themes:
-              default: Mastodon Bird UI
-              mastodon-dark: Mastodon
-          ko:
-            themes:
-              default: Mastodon Bird UI
-              mastodon-dark: Mastodon
-          nl:
-            themes:
-              default: Mastodon Bird UI
-              mastodon-dark: Mastodon
-          pt:
-            themes:
-              default: Mastodon Bird UI
-              mastodon-dark: Mastodon
-          ru:
-            themes:
-              default: Mastodon Bird UI
-              mastodon-dark: Mastodon
-          tr:
-            themes:
-              default: Mastodon Bird UI
-              mastodon-dark: Mastodon
-          zh-CN:
-            themes:
-              default: Mastodon Bird UI
-              mastodon-dark: Mastodon
-          zh-TW:
-            themes:
-              default: Mastodon Bird UI
-              mastodon-dark: Mastodon
-          zh-HK:
-            themes:
-              default: Mastodon Bird UI
-              mastodon-dark: Mastodon
-          EOF
+            [ ! -f "$file" ] && return
+
+            if ! grep -q "^    ${key}:" "$file"; then
+              if grep -q "^  themes:" "$file"; then
+                sed -i "/^  themes:/a\\    ${key}: ${value}" "$file"
+                echo -e "  Added to $lang: $key"
+              fi
+            fi
+          }
+
+          # Update all other locales besides en and fi
+          for file in mastodon/config/locales/*.yml; do
+            filename=$(basename "$file")
+            # Only process main locale files (avoid files with dots in the name before .yml)
+            if [[ "$filename" == *.*.yml ]]; then
+              continue
+            fi
+            # Skip en.yml and fi.yml since they are handled by install-to-mastodon.sh
+            if [[ "$filename" == "en.yml" || "$filename" == "fi.yml" ]]; then
+              continue
+            fi
+
+            # Update default locale label to Mastodon Bird UI
+            sed -i "s/^    default: Mastodon.*/    default: Mastodon Bird UI/" "$file"
+
+            # Add other theme variants using add_locale_entry
+            add_locale_entry "$file" "mastodon-dark" "Mastodon" "$filename"
+            add_locale_entry "$file" "mastodon-bird-ui-accessible" "Mastodon Bird UI (Accessible)" "$filename"
+            add_locale_entry "$file" "mastodon-bird-ui-accessible-plus" "Mastodon Bird UI (Accessible Plus)" "$filename"
+          done
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
