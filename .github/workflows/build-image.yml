@@ -8,6 +8,12 @@ on:
     branches:
       - main
       - master
+    # The published image depends only on upstream Mastodon + Bird UI, so
+    # doc/workflow edits must not trigger a multi-hour, multi-arch rebuild.
+    paths-ignore:
+      - '**.md'
+      - 'LICENSE'
+      - '.github/**'
   workflow_dispatch:
     inputs:
       force_build:
@@ -24,9 +30,25 @@ permissions:
   contents: read
   packages: write
 
+# A full multi-arch build takes longer than the 6h cron interval, so without
+# this the scheduled runs stack up and publish the same image in parallel.
+# Scheduled runs queue behind an in-flight build; pushes supersede each other.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'push' }}
+
+env:
+  REGISTRY: ghcr.io
+
 jobs:
   check:
+    name: Check upstream release
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    # Least privilege: this job only reads the package manifest.
+    permissions:
+      contents: read
+      packages: read
     outputs:
       tag: ${{ steps.get-tag.outputs.tag }}
       should_build: ${{ steps.check-build.outputs.should_build }}
@@ -35,60 +57,81 @@ jobs:
       - name: Prep Image Name
         id: prep
         run: |
-          IMAGE_NAME="ghcr.io/$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')"
-          echo "image_name=$IMAGE_NAME" >> $GITHUB_OUTPUT
+          # GHCR rejects uppercase repository names, so normalise to lowercase.
+          IMAGE_NAME="${REGISTRY}/$(printf '%s' "${GITHUB_REPOSITORY}" | tr '[:upper:]' '[:lower:]')"
+          echo "image_name=${IMAGE_NAME}" >> "$GITHUB_OUTPUT"
+
       - name: Get Target Tag
         id: get-tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CUSTOM_TAG: ${{ inputs.custom_tag }}
         run: |
-          if [ -n "${{ github.event.inputs.custom_tag }}" ]; then
-            TAG="${{ github.event.inputs.custom_tag }}"
+          set -euo pipefail
+
+          if [ -n "${CUSTOM_TAG}" ]; then
+            TAG="${CUSTOM_TAG}"
           else
-            # Fetch latest release tag from mastodon/mastodon
-            TAG=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" https://api.github.com/repos/mastodon/mastodon/releases/latest | jq -r .tag_name)
+            # Resolve the latest stable release of mastodon/mastodon.
+            TAG="$(gh api repos/mastodon/mastodon/releases/latest --jq '.tag_name')"
           fi
-          
-          if [ -z "$TAG" ] || [ "$TAG" = "null" ]; then
-            echo "Error: Could not retrieve latest Mastodon tag" >&2
+
+          if [ -z "${TAG}" ] || [ "${TAG}" = "null" ]; then
+            echo "::error::Could not determine the target Mastodon tag"
             exit 1
           fi
-          
-          echo "tag=$TAG" >> $GITHUB_OUTPUT
-          echo "Target Mastodon version tag: $TAG"
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+          # The tag is interpolated into docker commands later on, so reject
+          # anything that is not a plain version-ish string.
+          if [[ "${TAG}" == *[!A-Za-z0-9._-]* ]]; then
+            echo "::error::Refusing to build suspicious tag: ${TAG}"
+            exit 1
+          fi
+
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "Target Mastodon version tag: ${TAG}"
 
       - name: Log in to GHCR
         uses: docker/login-action@v4
         with:
-          registry: ghcr.io
+          registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # No docker/setup-buildx-action here on purpose: `imagetools` talks to
+      # the registry directly and needs no builder, so the 4x/day scheduled
+      # run skips ~20s of setup.
       - name: Check if build is needed
         id: check-build
+        env:
+          TAG: ${{ steps.get-tag.outputs.tag }}
+          FORCE_BUILD: ${{ inputs.force_build }}
+          IMAGE_NAME: ${{ steps.prep.outputs.image_name }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
-          TAG="${{ steps.get-tag.outputs.tag }}"
-          FORCE_BUILD="${{ github.event.inputs.force_build }}"
-          
-          if [ "$FORCE_BUILD" = "true" ] || [ "${{ github.event_name }}" = "push" ]; then
+          set -euo pipefail
+
+          if [ "${FORCE_BUILD}" = "true" ] || [ "${EVENT_NAME}" = "push" ]; then
             echo "Force build or push event detected. Proceeding to build."
-            echo "should_build=true" >> $GITHUB_OUTPUT
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          
-          # Check if tag exists in GHCR using docker buildx imagetools inspect
-          if docker buildx imagetools inspect ${{ steps.prep.outputs.image_name }}:${TAG} >/dev/null 2>&1; then
-            echo "Image tag $TAG already exists in GHCR. Skipping build."
-            echo "should_build=false" >> $GITHUB_OUTPUT
+
+          if docker buildx imagetools inspect "${IMAGE_NAME}:${TAG}" >/dev/null 2>&1; then
+            echo "Image tag ${TAG} already exists in ${REGISTRY}. Skipping build."
+            echo "should_build=false" >> "$GITHUB_OUTPUT"
           else
-            echo "Image tag $TAG does not exist in GHCR. Proceeding to build."
-            echo "should_build=true" >> $GITHUB_OUTPUT
+            echo "Image tag ${TAG} does not exist in ${REGISTRY}. Proceeding to build."
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
           fi
 
   build:
+    name: Build (${{ matrix.arch }})
     needs: check
     if: needs.check.outputs.should_build == 'true'
+    runs-on: ${{ matrix.runner }}
+    # Without an explicit cap a stuck build burns the 6h default on both runners.
+    timeout-minutes: 240
     env:
       IMAGE_NAME: ${{ needs.check.outputs.image_name }}
     strategy:
@@ -101,7 +144,6 @@ jobs:
           - platform: linux/arm64
             runner: ubuntu-24.04-arm
             arch: arm64
-    runs-on: ${{ matrix.runner }}
     steps:
       - name: Checkout Mastodon
         uses: actions/checkout@v6
@@ -117,16 +159,18 @@ jobs:
           path: mastodon-bird-ui
 
       - name: Install Bird UI to Mastodon
+        shell: bash
         run: |
           # Define and export a dummy chown function to prevent script failure on runner
           chown() { :; }
           export -f chown
-          
+
           cd mastodon-bird-ui
           # Install Bird UI to Mastodon with all variations (-v) and set it as the default theme (-d)
           bash scripts/install-to-mastodon.sh --path ../mastodon -v -d
 
       - name: Add Bird UI locale entries to all locales
+        shell: bash
         run: |
           # Define add_locale_entry function as defined in install-to-mastodon.sh
           add_locale_entry() {
@@ -172,7 +216,7 @@ jobs:
       - name: Log in to GHCR
         uses: docker/login-action@v4
         with:
-          registry: ghcr.io
+          registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
@@ -184,10 +228,12 @@ jobs:
           file: mastodon/Dockerfile
           platforms: ${{ matrix.platform }}
           outputs: type=image,name=${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
+          # Per-arch caches: layers are not portable between architectures.
           cache-from: type=gha,scope=build-${{ matrix.arch }}
           cache-to: type=gha,mode=max,scope=build-${{ matrix.arch }}
 
       - name: Export Digest
+        shell: bash
         run: |
           mkdir -p /tmp/digests
           digest="${{ steps.build.outputs.digest }}"
@@ -202,8 +248,10 @@ jobs:
           retention-days: 1
 
   merge:
+    name: Publish multi-arch manifest
     needs: [check, build]
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     env:
       IMAGE_NAME: ${{ needs.check.outputs.image_name }}
     steps:
@@ -220,16 +268,34 @@ jobs:
       - name: Log in to GHCR
         uses: docker/login-action@v4
         with:
-          registry: ghcr.io
+          registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Create and Push Multi-Arch Manifest
+        shell: bash
+        env:
+          TAG: ${{ needs.check.outputs.tag }}
         run: |
+          set -euo pipefail
           cd /tmp/digests
-          
-          # Combine digests into the final multi-arch manifest
+
+          # Build the source list explicitly: a bare glob silently degrades to
+          # the literal string "*" when nothing was downloaded.
+          shopt -s nullglob
+          digests=(*)
+          if [ "${#digests[@]}" -eq 0 ]; then
+            echo "::error::No platform digests were downloaded; refusing to publish an empty manifest."
+            exit 1
+          fi
+
+          sources=()
+          for digest in "${digests[@]}"; do
+            sources+=("${IMAGE_NAME}@sha256:${digest}")
+          done
+
+          echo "Publishing ${#sources[@]} platform(s) as ${IMAGE_NAME}:${TAG} and ${IMAGE_NAME}:latest"
           docker buildx imagetools create \
-            -t ${{ env.IMAGE_NAME }}:${{ needs.check.outputs.tag }} \
-            -t ${{ env.IMAGE_NAME }}:latest \
-            $(printf "${{ env.IMAGE_NAME }}@sha256:%s " *)
+            -t "${IMAGE_NAME}:${TAG}" \
+            -t "${IMAGE_NAME}:latest" \
+            "${sources[@]}"

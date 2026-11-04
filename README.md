@@ -31,20 +31,26 @@ services:
 
 ## 🛠️ GitHub Actions Workflow Details
 
-The workflow [Build Mastodon with Bird UI](file:///.github/workflows/build-image.yml) performs the following steps:
+The workflow [Build Mastodon with Bird UI](.github/workflows/build-image.yml) performs the following steps:
 
-1. **Upstream Release Detection**: Queries the GitHub API for the latest release of `mastodon/mastodon`.
-2. **Pre-build Check**: Checks if the target version tag has already been built and exists in GHCR (skips if it does).
+1. **Upstream Release Detection**: Queries the latest stable release of `mastodon/mastodon` via `gh api` (a manually supplied tag bypasses the lookup).
+2. **Pre-build Check**: Inspects the target version tag in GHCR and skips the build when it already exists.
 3. **Integration**:
    - Clones `mastodon/mastodon` at the target version.
    - Clones `rollecode/mastodon-bird-ui`.
-   - Runs the Bird UI installation script with the `-d` (default) flag.
-   - Creates a dedicated YAML locale file (`config/locales/zzz-bird-ui.yml`) to correctly rename the default Bird UI theme to `"Mastodon Bird UI"` and keep the original dark theme as `"Mastodon"`.
+   - Runs the Bird UI installation script with the `-v` (all variations) and `-d` (default theme) flags.
+   - Rewrites every locale file so the default theme reads `"Mastodon Bird UI"` while the original dark theme is exposed as `"Mastodon"`, and adds the accessible variants to each locale's theme list.
 4. **Multi-Arch Compilation**:
    - Compiles the amd64 image on `ubuntu-24.04`.
    - Compiles the arm64 image on `ubuntu-24.04-arm`.
    - Uploads build digests as artifacts.
 5. **Manifest Creation**: Merges the platform-specific digests into a single multi-arch manifest tag and pushes it to `ghcr.io/bedrockdigger/mastodon-with-bird-ui`.
+
+### Build Efficiency
+- **Serialised runs**: a `concurrency` group keyed on the branch means only one build runs at a time, so the 6-hourly schedule can never launch a second multi-hour build on top of a still-running one. Pushes to the default branch supersede each other.
+- **No wasted builds**: documentation-only pushes (`*.md`, `LICENSE`, `.github/**`) do not trigger a rebuild — the image content does not depend on them.
+- **Bounded cost**: each job has an explicit `timeout-minutes`, so a hung build cannot consume the 6-hour default on both runners.
+- **Native runners**: amd64 and arm64 compile on their own native GitHub runners (no QEMU emulation), with per-architecture Buildx layer caches.
 
 ### Manual Trigger / Overrides
 You can manually run the workflow via the **Actions** tab on GitHub:
