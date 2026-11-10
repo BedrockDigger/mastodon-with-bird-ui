@@ -1,0 +1,321 @@
+name: Build Mastodon Bird UI Container Image
+
+on:
+  # Scheduled polling based on Mastodon release timeframe
+  # Peak release window is weekdays between 12:00 and 16:00 UTC (14:00-18:00 CET/CEST)
+  # Running twice daily at 06:00 and 18:00 UTC catches all new releases promptly
+  schedule:
+    - cron: '0 6,18 * * *'
+
+  # Manual trigger with optional tag specification and options
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Mastodon release tag (e.g. v4.3.1). If omitted, latest stable release is automatically resolved.'
+        required: false
+        type: string
+      force_rebuild:
+        description: 'Force rebuild even if image tag already exists in GHCR'
+        required: false
+        default: false
+        type: boolean
+      bird_ui_ref:
+        description: 'Git ref for ronilaukkarinen/mastodon-bird-ui (branch, tag, or commit)'
+        required: false
+        default: 'main'
+        type: string
+      set_default:
+        description: 'Set Mastodon Bird UI as server default theme (y/n)'
+        required: false
+        default: 'y'
+        type: string
+      include_variations:
+        description: 'Include accessible variations (y/n)'
+        required: false
+        default: 'y'
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  # Step 1: Resolve and validate the target Mastodon release, and check if already built
+  resolve-release:
+    runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+      version: ${{ steps.resolve.outputs.version }}
+      major_minor: ${{ steps.resolve.outputs.major_minor }}
+      commit: ${{ steps.resolve.outputs.commit }}
+      is_latest_stable: ${{ steps.resolve.outputs.is_latest_stable }}
+      should_build: ${{ steps.check-image.outputs.should_build }}
+    steps:
+      - name: Resolve target Mastodon release tag
+        id: resolve
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          TARGET_TAG=""
+
+          # Check if manual input was provided
+          if [ -n "${{ github.event.inputs.tag }}" ]; then
+            TARGET_TAG="${{ github.event.inputs.tag }}"
+            echo "Target tag from workflow_dispatch input: $TARGET_TAG"
+          else
+            # Automatically resolve latest stable release from upstream Mastodon
+            echo "Polling upstream Mastodon repository for latest stable release..."
+            TARGET_TAG=$(git ls-remote --tags --refs https://github.com/mastodon/mastodon.git \
+              | grep -o 'refs/tags/v.*' \
+              | sed 's#refs/tags/##' \
+              | grep -E '^v[0-9]+\.[0-9]+(\.[0-9]+)?$' \
+              | sort -V \
+              | tail -n 1)
+            echo "Resolved latest upstream stable tag: $TARGET_TAG"
+          fi
+
+          # Ensure tag starts with 'v'
+          if [[ ! "$TARGET_TAG" =~ ^v ]]; then
+            TARGET_TAG="v$TARGET_TAG"
+          fi
+
+          # Verify that the tag represents a STABLE release (e.g. v4.3.1, not v4.3.0-rc1 or nightly)
+          if [[ ! "$TARGET_TAG" =~ ^v([0-9]+)\.([0-9]+)(\.([0-9]+))?$ ]]; then
+            echo "::error::Tag '$TARGET_TAG' is not a valid stable semver release. Skipping build."
+            exit 0
+          fi
+
+          MAJOR="${BASH_REMATCH[1]}"
+          MINOR="${BASH_REMATCH[2]}"
+          PATCH="${BASH_REMATCH[4]:-0}"
+          VERSION="${MAJOR}.${MINOR}.${PATCH}"
+          MAJOR_MINOR="v${MAJOR}.${MINOR}"
+
+          # Query latest stable release across all releases to determine 'latest' tag
+          LATEST_STABLE=$(git ls-remote --tags --refs https://github.com/mastodon/mastodon.git \
+            | grep -o 'refs/tags/v.*' \
+            | sed 's#refs/tags/##' \
+            | grep -E '^v[0-9]+\.[0-9]+(\.[0-9]+)?$' \
+            | sort -V \
+            | tail -n 1)
+
+          if [ "$TARGET_TAG" = "$LATEST_STABLE" ]; then
+            IS_LATEST="true"
+          else
+            IS_LATEST="false"
+          fi
+
+          # Retrieve commit hash for the tag
+          COMMIT_SHA=$(git ls-remote --tags https://github.com/mastodon/mastodon.git "refs/tags/${TARGET_TAG}^{}" "refs/tags/${TARGET_TAG}" \
+            | head -n 1 \
+            | cut -f1)
+
+          echo "Selected release tag: $TARGET_TAG"
+          echo "Version: $VERSION"
+          echo "Major.Minor: $MAJOR_MINOR"
+          echo "Commit SHA: $COMMIT_SHA"
+          echo "Is latest stable: $IS_LATEST"
+
+          echo "tag=$TARGET_TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "major_minor=$MAJOR_MINOR" >> "$GITHUB_OUTPUT"
+          echo "commit=$COMMIT_SHA" >> "$GITHUB_OUTPUT"
+          echo "is_latest_stable=$IS_LATEST" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GitHub Container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Check if this release image is already built and published in GHCR
+      - name: Check if image tag already exists in GHCR
+        id: check-image
+        shell: bash
+        run: |
+          TARGET_TAG="${{ steps.resolve.outputs.tag }}"
+          FORCE_REBUILD="${{ github.event.inputs.force_rebuild || 'false' }}"
+          repo_image="ghcr.io/${{ github.repository }}"
+          IMAGE_NAME="${repo_image,,}"
+
+          if [ "$FORCE_REBUILD" = "true" ]; then
+            echo "Force rebuild requested. Proceeding with build."
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Checking if $IMAGE_NAME:$TARGET_TAG already exists in GHCR..."
+          if docker buildx imagetools inspect "$IMAGE_NAME:$TARGET_TAG" >/dev/null 2>&1; then
+            echo "Image $IMAGE_NAME:$TARGET_TAG already exists in GHCR. No build needed."
+            echo "should_build=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Image $IMAGE_NAME:$TARGET_TAG does not exist. New stable release detected! Starting build."
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  # Step 2: Build amd64 and arm64 container images separately across native runners
+  build-image:
+    needs: resolve-release
+    if: needs.resolve-release.outputs.should_build == 'true'
+    runs-on: ubuntu-${{ matrix.RUNNER_VERSION }}${{ matrix.SUFFIX }}
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - linux/amd64
+          - linux/arm64
+        include:
+          - platform: linux/amd64
+            RUNNER_VERSION: '24.04'
+            SUFFIX: ''
+          - platform: linux/arm64
+            RUNNER_VERSION: '24.04'
+            SUFFIX: '-arm'
+
+    steps:
+      - name: Prepare environment
+        run: |
+          platform="${{ matrix.platform }}"
+          echo "PLATFORM_PAIR=${platform//\//-}" >> $GITHUB_ENV
+          repo_image="ghcr.io/${{ github.repository }}"
+          echo "IMAGE_NAME=${repo_image,,}" >> $GITHUB_ENV
+
+      # Checkout our repository to access the extended install script
+      - name: Checkout mastodon-with-bird-ui
+        uses: actions/checkout@v4
+        with:
+          path: mastodon-with-bird-ui
+
+      # Checkout upstream Mastodon at the resolved release tag
+      - name: Checkout Mastodon (${{ needs.resolve-release.outputs.tag }})
+        uses: actions/checkout@v4
+        with:
+          repository: mastodon/mastodon
+          ref: ${{ needs.resolve-release.outputs.tag }}
+          path: mastodon
+
+      # Checkout upstream Mastodon Bird UI repository
+      - name: Checkout mastodon-bird-ui
+        uses: actions/checkout@v4
+        with:
+          repository: ronilaukkarinen/mastodon-bird-ui
+          ref: ${{ github.event.inputs.bird_ui_ref || 'main' }}
+          path: mastodon-bird-ui
+
+      # Integrate Bird UI into Mastodon using our extended script with full locale support
+      - name: Integrate Mastodon Bird UI
+        run: |
+          SET_DEF="${{ github.event.inputs.set_default || 'y' }}"
+          INC_VAR="${{ github.event.inputs.include_variations || 'y' }}"
+
+          EXTRA_FLAGS=""
+          if [[ "$SET_DEF" =~ ^[Yy]$ ]]; then
+            EXTRA_FLAGS="$EXTRA_FLAGS --default"
+          else
+            EXTRA_FLAGS="$EXTRA_FLAGS --no-default"
+          fi
+
+          if [[ "$INC_VAR" =~ ^[Yy]$ ]]; then
+            EXTRA_FLAGS="$EXTRA_FLAGS --variations"
+          fi
+
+          chmod +x mastodon-with-bird-ui/scripts/install-to-mastodon.sh
+          bash mastodon-with-bird-ui/scripts/install-to-mastodon.sh \
+            --path "$GITHUB_WORKSPACE/mastodon" \
+            --bird-ui-path "$GITHUB_WORKSPACE/mastodon-bird-ui" \
+            $EXTRA_FLAGS
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        id: buildx
+
+      - name: Log in to the GitHub Container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Build image for the specific platform and push by digest
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: mastodon
+          file: mastodon/Dockerfile
+          build-args: |
+            SOURCE_COMMIT=${{ needs.resolve-release.outputs.commit }}
+          platforms: ${{ matrix.platform }}
+          provenance: false
+          push: true
+          cache-from: type=gha,scope=build-${{ env.PLATFORM_PAIR }}
+          cache-to: type=gha,mode=max,scope=build-${{ env.PLATFORM_PAIR }}
+          outputs: type=image,"name=${{ env.IMAGE_NAME }}",push-by-digest=true,name-canonical=true,push=true
+
+      - name: Export digest
+        run: |
+          mkdir -p "${{ runner.temp }}/digests"
+          digest="${{ steps.build.outputs.digest }}"
+          touch "${{ runner.temp }}/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ env.PLATFORM_PAIR }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  # Step 3: Download digests and merge into multi-arch manifest list
+  merge-images:
+    runs-on: ubuntu-24.04
+    needs:
+      - resolve-release
+      - build-image
+
+    steps:
+      - name: Prepare environment
+        run: |
+          repo_image="ghcr.io/${{ github.repository }}"
+          echo "IMAGE_NAME=${repo_image,,}" >> $GITHUB_ENV
+
+      - name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digests-*
+          merge-multiple: true
+
+      - name: Log in to the GitHub Container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          flavor: |
+            latest=${{ needs.resolve-release.outputs.is_latest_stable }}
+          tags: |
+            type=raw,value=${{ needs.resolve-release.outputs.tag }}
+            type=raw,value=${{ needs.resolve-release.outputs.version }}
+            type=raw,value=${{ needs.resolve-release.outputs.major_minor }}
+
+      - name: Create manifest list and push
+        working-directory: ${{ runner.temp }}/digests
+        run: |
+          docker buildx imagetools create $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf "${IMAGE_NAME}@sha256:%s " *)
+
+      - name: Inspect image
+        run: |
+          docker buildx imagetools inspect "${IMAGE_NAME}:${{ needs.resolve-release.outputs.tag }}"
