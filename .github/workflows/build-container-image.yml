@@ -50,12 +50,12 @@ jobs:
     outputs:
       tag: ${{ steps.resolve.outputs.tag }}
       commit: ${{ steps.resolve.outputs.commit }}
+      image_name: ${{ steps.resolve.outputs.image_name }}
       is_latest_stable: ${{ steps.resolve.outputs.is_latest_stable }}
       should_build: ${{ steps.check-image.outputs.should_build }}
     steps:
       - name: Resolve target Mastodon release tag
         id: resolve
-        shell: bash
         run: |
           set -euo pipefail
 
@@ -97,12 +97,17 @@ jobs:
             | tail -n 1 \
             | cut -f1)
 
+          repo_image="ghcr.io/${{ github.repository }}"
+          IMAGE_NAME="${repo_image,,}"
+
           echo "Selected release tag: $TARGET_TAG"
           echo "Commit SHA: $COMMIT_SHA"
+          echo "Image name: $IMAGE_NAME"
           echo "Is latest stable: $IS_LATEST"
 
           echo "tag=$TARGET_TAG" >> "$GITHUB_OUTPUT"
           echo "commit=$COMMIT_SHA" >> "$GITHUB_OUTPUT"
+          echo "image_name=$IMAGE_NAME" >> "$GITHUB_OUTPUT"
           echo "is_latest_stable=$IS_LATEST" >> "$GITHUB_OUTPUT"
 
       - name: Log in to GitHub Container registry
@@ -115,12 +120,10 @@ jobs:
       # Check if this release image is already built and published in GHCR
       - name: Check if image tag already exists in GHCR
         id: check-image
-        shell: bash
         run: |
           TARGET_TAG="${{ steps.resolve.outputs.tag }}"
           FORCE_REBUILD="${{ github.event.inputs.force_rebuild || 'false' }}"
-          repo_image="ghcr.io/${{ github.repository }}"
-          IMAGE_NAME="${repo_image,,}"
+          IMAGE_NAME="${{ steps.resolve.outputs.image_name }}"
 
           if [ "$FORCE_REBUILD" = "true" ]; then
             echo "Force rebuild requested. Proceeding with build."
@@ -130,6 +133,12 @@ jobs:
 
           echo "Checking if $IMAGE_NAME:$TARGET_TAG already exists in GHCR..."
           if docker buildx imagetools inspect "$IMAGE_NAME:$TARGET_TAG" >/dev/null 2>&1; then
+            # If this is the latest stable release, also ensure :latest is present in GHCR
+            if [ "${{ steps.resolve.outputs.is_latest_stable }}" = "true" ] && ! docker buildx imagetools inspect "$IMAGE_NAME:latest" >/dev/null 2>&1; then
+              echo "Release $TARGET_TAG exists, but :latest is missing! Starting build to tag :latest."
+              echo "should_build=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
             echo "Image $IMAGE_NAME:$TARGET_TAG already exists in GHCR. No build needed."
             echo "should_build=false" >> "$GITHUB_OUTPUT"
           else
@@ -142,6 +151,8 @@ jobs:
     needs: resolve-release
     if: needs.resolve-release.outputs.should_build == 'true'
     runs-on: ubuntu-${{ matrix.RUNNER_VERSION }}${{ matrix.SUFFIX }}
+    env:
+      IMAGE_NAME: ${{ needs.resolve-release.outputs.image_name }}
     strategy:
       fail-fast: false
       matrix:
@@ -163,8 +174,6 @@ jobs:
         run: |
           platform="${{ matrix.platform }}"
           echo "PLATFORM_PAIR=${platform//\//-}" >> $GITHUB_ENV
-          repo_image="ghcr.io/${{ github.repository }}"
-          echo "IMAGE_NAME=${repo_image,,}" >> $GITHUB_ENV
 
       # Checkout our repository to access the extended install script
       - name: Checkout mastodon-with-bird-ui
@@ -202,7 +211,6 @@ jobs:
             EXTRA_FLAGS="$EXTRA_FLAGS --variations"
           fi
 
-          chmod +x mastodon-with-bird-ui/scripts/install-to-mastodon.sh
           bash mastodon-with-bird-ui/scripts/install-to-mastodon.sh \
             --path "$GITHUB_WORKSPACE/mastodon" \
             --bird-ui-path "$GITHUB_WORKSPACE/mastodon-bird-ui" \
@@ -230,6 +238,8 @@ jobs:
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.description=Mastodon with pre-integrated Bird UI
+            org.opencontainers.image.version=${{ needs.resolve-release.outputs.tag }}
+            org.opencontainers.image.revision=${{ needs.resolve-release.outputs.commit }}
           platforms: ${{ matrix.platform }}
           provenance: false
           push: true
@@ -258,13 +268,10 @@ jobs:
       - resolve-release
       - build-image
     if: needs.resolve-release.outputs.should_build == 'true'
+    env:
+      IMAGE_NAME: ${{ needs.resolve-release.outputs.image_name }}
 
     steps:
-      - name: Prepare environment
-        run: |
-          repo_image="ghcr.io/${{ github.repository }}"
-          echo "IMAGE_NAME=${repo_image,,}" >> $GITHUB_ENV
-
       - name: Download digests
         uses: actions/download-artifact@v4
         with:
@@ -299,6 +306,8 @@ jobs:
           docker buildx imagetools create $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
             --annotation "index:org.opencontainers.image.source=https://github.com/${{ github.repository }}" \
             --annotation "index:org.opencontainers.image.description=Mastodon with pre-integrated Bird UI" \
+            --annotation "index:org.opencontainers.image.version=${{ needs.resolve-release.outputs.tag }}" \
+            --annotation "index:org.opencontainers.image.revision=${{ needs.resolve-release.outputs.commit }}" \
             $(printf "${IMAGE_NAME}@sha256:%s " *)
 
       - name: Inspect image
