@@ -518,14 +518,18 @@ for locale_file in "$MASTODON_PATH/config/locales"/*.yml; do
 
   # Set the 'default' locale label based on whether Bird UI is the default theme
   if [[ "$SET_DEFAULT" =~ ^[Yy]$ ]]; then
-    # Grab original default name (e.g. Mastodon or ماستدون) and strip any quotes
-    orig_name=$(awk '/^[ ]+default:/{sub(/^[ ]+default:[ ]*/, ""); print; exit}' "$locale_file" | tr -d '\042\047')
+    # Grab original default name specifically under 'themes:' (e.g. Mastodon or ماستدون)
+    orig_name=$(awk '/^  themes:/{flag=1; next} flag && /^    default:/{sub(/^    default:[ ]*/, ""); print; exit} flag && /^  [^ ]/{flag=0}' "$locale_file" | tr -d '\042\047')
     orig_name="${orig_name:-Mastodon}"
+    if [ "$orig_name" = "Mastodon Bird UI" ]; then
+      existing_dark=$(awk '/^  themes:/{flag=1; next} flag && /^    mastodon-dark:/{sub(/^    mastodon-dark:[ ]*/, ""); print; exit} flag && /^  [^ ]/{flag=0}' "$locale_file" | tr -d '\042\047')
+      orig_name="${existing_dark:-Mastodon}"
+    fi
 
-    awk '{ if ($0 ~ /^    default:/) print "    default: Mastodon Bird UI"; else print }' "$locale_file" > "$locale_file.tmp" && mv "$locale_file.tmp" "$locale_file"
+    awk '/^  themes:/{in_themes=1} in_themes && /^    default:/{print "    default: Mastodon Bird UI"; in_themes=0; next} /^  [^ ]/{in_themes=0} 1' "$locale_file" > "$locale_file.tmp" && mv "$locale_file.tmp" "$locale_file"
     add_locale_entry "$locale_file" "mastodon-dark" "$orig_name" "$filename"
   else
-    awk '{ if ($0 ~ /^    default: Mastodon Bird UI/) print "    default: Mastodon"; else print }' "$locale_file" > "$locale_file.tmp" && mv "$locale_file.tmp" "$locale_file"
+    awk '/^  themes:/{in_themes=1} in_themes && /^    default: Mastodon Bird UI/{print "    default: Mastodon"; in_themes=0; next} /^  [^ ]/{in_themes=0} 1' "$locale_file" > "$locale_file.tmp" && mv "$locale_file.tmp" "$locale_file"
     add_locale_entry "$locale_file" "mastodon-bird-ui-auto" "Mastodon Bird UI" "$filename"
   fi
 
