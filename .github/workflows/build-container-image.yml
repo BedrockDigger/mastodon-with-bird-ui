@@ -42,7 +42,7 @@ permissions:
 jobs:
   # Step 1: Resolve and validate the target Mastodon release, and check if already built
   resolve-release:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     outputs:
       tag: ${{ steps.resolve.outputs.tag }}
       version: ${{ steps.resolve.outputs.version }}
@@ -168,10 +168,12 @@ jobs:
           - linux/arm64
         include:
           - platform: linux/amd64
-            RUNNER_VERSION: '24.04'
+            # renovate: datasource=github-runners depName=ubuntu
+            RUNNER_VERSION: '26.04'
             SUFFIX: ''
           - platform: linux/arm64
-            RUNNER_VERSION: '24.04'
+            # renovate: datasource=github-runners depName=ubuntu
+            RUNNER_VERSION: '26.04'
             SUFFIX: '-arm'
 
     steps:
@@ -273,7 +275,7 @@ jobs:
 
   # Step 3: Download digests and merge into multi-arch manifest list
   merge-images:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     needs:
       - resolve-release
       - build-image

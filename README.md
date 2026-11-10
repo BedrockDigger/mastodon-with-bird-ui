@@ -26,7 +26,7 @@ This repository is independent of both upstream `mastodon/mastodon` and `ronilau
 
 - **Automated Scheduled Polling:** No external webhooks, third-party relays, or serverless forwarders required.
 - **Smart Idempotency (Duplicate Prevention):** Queries GHCR before building; skips build if the image tag already exists, finishing in ~10 seconds.
-- **Native Multi-Architecture Distributed Build:** Builds `linux/amd64` and `linux/arm64` in parallel using native runners (`ubuntu-24.04` and `ubuntu-24.04-arm`) without slow QEMU emulation.
+- **Native Multi-Architecture Distributed Build:** Builds `linux/amd64` and `linux/arm64` in parallel using native runners (`ubuntu-26.04` and `ubuntu-26.04-arm`) without slow QEMU emulation.
 - **Complete 106-Language Locale Support:** Extends `scripts/install-to-mastodon.sh` with native translations for Bird UI Accessible and Accessible Plus variations across **all 106 base languages** supported by Mastodon.
 - **Native Brand Name Preservation:** Automatically preserves localized names for original Mastodon (e.g., `ماستدون` in Arabic, `ماستودون` in Persian, `מסטودון` in Hebrew) when Bird UI is set as the default theme.
 - **Dual Registry Authentication:** Supports both `GITHUB_TOKEN` and personal access tokens (`CR_PAT`) with automatic OCI repository linking (`org.opencontainers.image.source`).
@@ -147,8 +147,8 @@ The build replicates the distributed multi-runner pattern from upstream Mastodon
 
 2. **`build-image` Matrix Job (Runs only when a new release is detected):**
    - Runs in parallel on:
-     - `ubuntu-24.04` for `linux/amd64`
-     - `ubuntu-24.04-arm` for `linux/arm64`
+     - `ubuntu-26.04` for `linux/amd64`
+     - `ubuntu-26.04-arm` for `linux/arm64`
    - Clones upstream Mastodon at the resolved release tag.
    - Clones `ronilaukkarinen/mastodon-bird-ui`.
    - Runs `scripts/install-to-mastodon.sh` with full locale support to inject Bird UI SCSS into `app/javascript/styles/mastodon-bird-ui/`, update `config/themes.yml`, and update `config/locales/*.yml`.
