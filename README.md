@@ -178,8 +178,8 @@ You can trigger a build manually at any time via `workflow_dispatch`:
    - **`tag`**: Target Mastodon release tag (e.g. `v4.3.1`). Leave empty to automatically resolve the latest stable release.
    - **`force_rebuild`**: Force rebuild and push even if the image tag already exists in GHCR.
    - **`bird_ui_ref`**: Git ref for `ronilaukkarinen/mastodon-bird-ui` (default: `main`).
-   - **`set_default`**: Set Mastodon Bird UI as the server default theme (`y`/`n`, default: `y`).
-   - **`include_variations`**: Include accessible variations (`y`/`n`, default: `y`).
+   - **`set_default`**: Set Mastodon Bird UI as the server default theme (boolean checkbox, default: `true`).
+   - **`include_variations`**: Include accessible variations (boolean checkbox, default: `true`).
 
 ---
 

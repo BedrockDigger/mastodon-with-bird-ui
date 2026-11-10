@@ -25,15 +25,19 @@ on:
         default: 'main'
         type: string
       set_default:
-        description: 'Set Mastodon Bird UI as server default theme (y/n)'
+        description: 'Set Mastodon Bird UI as server default theme'
         required: false
-        default: 'y'
-        type: string
+        default: true
+        type: boolean
       include_variations:
-        description: 'Include accessible variations (y/n)'
+        description: 'Include accessible variations'
         required: false
-        default: 'y'
-        type: string
+        default: true
+        type: boolean
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -55,42 +59,32 @@ jobs:
         run: |
           set -euo pipefail
 
-          TARGET_TAG=""
-
-          # Check if manual input was provided
-          if [ -n "${{ github.event.inputs.tag }}" ]; then
-            TARGET_TAG="${{ github.event.inputs.tag }}"
-            echo "Target tag from workflow_dispatch input: $TARGET_TAG"
-          else
-            # Automatically resolve latest stable release from upstream Mastodon
-            echo "Polling upstream Mastodon repository for latest stable release..."
-            TARGET_TAG=$(git ls-remote --tags --refs https://github.com/mastodon/mastodon.git \
-              | grep -o 'refs/tags/v.*' \
-              | sed 's#refs/tags/##' \
-              | grep -E '^v[0-9]+\.[0-9]+(\.[0-9]+)?$' \
-              | sort -V \
-              | tail -n 1)
-            echo "Resolved latest upstream stable tag: $TARGET_TAG"
-          fi
-
-          # Ensure tag starts with 'v'
-          if [[ ! "$TARGET_TAG" =~ ^v ]]; then
-            TARGET_TAG="v$TARGET_TAG"
-          fi
-
-          # Verify that the tag represents a STABLE release (e.g. v4.3.1, not v4.3.0-rc1 or nightly)
-          if [[ ! "$TARGET_TAG" =~ ^v([0-9]+)\.([0-9]+)(\.([0-9]+))?$ ]]; then
-            echo "::error::Tag '$TARGET_TAG' is not a valid stable semver release. Skipping build."
-            exit 0
-          fi
-
-          # Query latest stable release across all releases to determine 'latest' tag
-          LATEST_STABLE=$(git ls-remote --tags --refs https://github.com/mastodon/mastodon.git \
+          # Fetch upstream stable release tags once
+          echo "Fetching upstream Mastodon release tags..."
+          TAG_LIST=$(git ls-remote --tags --refs https://github.com/mastodon/mastodon.git \
             | grep -o 'refs/tags/v.*' \
             | sed 's#refs/tags/##' \
             | grep -E '^v[0-9]+\.[0-9]+(\.[0-9]+)?$' \
-            | sort -V \
-            | tail -n 1)
+            | sort -V)
+
+          LATEST_STABLE=$(echo "$TAG_LIST" | tail -n 1)
+
+          TARGET_TAG="${{ github.event.inputs.tag }}"
+          if [ -z "$TARGET_TAG" ]; then
+            TARGET_TAG="$LATEST_STABLE"
+            echo "Auto-resolved latest upstream stable tag: $TARGET_TAG"
+          else
+            echo "Target tag from workflow_dispatch input: $TARGET_TAG"
+            if [[ ! "$TARGET_TAG" =~ ^v ]]; then
+              TARGET_TAG="v$TARGET_TAG"
+            fi
+          fi
+
+          # Verify that the tag represents a valid stable semver release
+          if [[ ! "$TARGET_TAG" =~ ^v([0-9]+)\.([0-9]+)(\.([0-9]+))?$ ]]; then
+            echo "::error::Tag '$TARGET_TAG' is not a valid stable semver release. Failing build."
+            exit 1
+          fi
 
           if [ "$TARGET_TAG" = "$LATEST_STABLE" ]; then
             IS_LATEST="true"
@@ -98,9 +92,9 @@ jobs:
             IS_LATEST="false"
           fi
 
-          # Retrieve commit hash for the tag
+          # Retrieve commit hash for the tag (tail -n 1 returns dereferenced commit if annotated)
           COMMIT_SHA=$(git ls-remote --tags https://github.com/mastodon/mastodon.git "refs/tags/${TARGET_TAG}^{}" "refs/tags/${TARGET_TAG}" \
-            | head -n 1 \
+            | tail -n 1 \
             | cut -f1)
 
           echo "Selected release tag: $TARGET_TAG"
@@ -197,17 +191,14 @@ jobs:
       # Integrate Bird UI into Mastodon using our extended script with full locale support
       - name: Integrate Mastodon Bird UI
         run: |
-          SET_DEF="${{ github.event.inputs.set_default || 'y' }}"
-          INC_VAR="${{ github.event.inputs.include_variations || 'y' }}"
-
           EXTRA_FLAGS=""
-          if [[ "$SET_DEF" =~ ^[Yy]$ ]]; then
+          if [ "${{ github.event.inputs.set_default || 'true' }}" = "true" ]; then
             EXTRA_FLAGS="$EXTRA_FLAGS --default"
           else
             EXTRA_FLAGS="$EXTRA_FLAGS --no-default"
           fi
 
-          if [[ "$INC_VAR" =~ ^[Yy]$ ]]; then
+          if [ "${{ github.event.inputs.include_variations || 'true' }}" = "true" ]; then
             EXTRA_FLAGS="$EXTRA_FLAGS --variations"
           fi
 
@@ -219,7 +210,6 @@ jobs:
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
-        id: buildx
 
       - name: Log in to the GitHub Container registry
         uses: docker/login-action@v3
@@ -267,6 +257,7 @@ jobs:
     needs:
       - resolve-release
       - build-image
+    if: needs.resolve-release.outputs.should_build == 'true'
 
     steps:
       - name: Prepare environment
