@@ -142,6 +142,7 @@ The build replicates the distributed multi-runner pattern from upstream Mastodon
 1. **`resolve-release` Job:**
    - Detects the target tag (or queries upstream Mastodon for the latest stable tag).
    - Validates that the tag is a stable release (`^v[0-9]+\.[0-9]+(\.[0-9]+)?$`, rejecting `-rc`, `-beta`, and `-alpha`).
+   - Determines whether the release is the latest stable Mastodon release to apply the `:latest` tag.
    - Logs into GHCR and queries `docker buildx imagetools inspect`. If the tag already exists (and `force_rebuild` is false), it skips the build.
 
 2. **`build-image` Matrix Job (Runs only when a new release is detected):**
@@ -159,8 +160,9 @@ The build replicates the distributed multi-runner pattern from upstream Mastodon
 3. **`merge-images` Job:**
    - Downloads digests from both runners.
    - Assembles the multi-architecture manifest list using `docker buildx imagetools create`.
-   - Tags the unified image strictly with the exact release tag:
+   - Tags the unified image cleanly with:
      - `ghcr.io/<owner>/<repo>:vX.Y.Z` (e.g. `:v4.7.5`)
+     - `ghcr.io/<owner>/<repo>:latest` (when building the latest stable release)
    - Inspects the pushed multi-arch manifest.
 
 ---
@@ -188,13 +190,13 @@ Update your `docker-compose.yml` to use your GHCR image:
 ```yaml
 services:
   web:
-    image: ghcr.io/<YOUR_GITHUB_USER_OR_ORG>/mastodon-with-bird-ui:v4.7.5
+    image: ghcr.io/<YOUR_GITHUB_USER_OR_ORG>/mastodon-with-bird-ui:latest # or :v4.7.5
     restart: always
     env_file: .env.production
     command: bundle exec puma -C config/puma.rb
     # ...
   sidekiq:
-    image: ghcr.io/<YOUR_GITHUB_USER_OR_ORG>/mastodon-with-bird-ui:v4.7.5
+    image: ghcr.io/<YOUR_GITHUB_USER_OR_ORG>/mastodon-with-bird-ui:latest # or :v4.7.5
     restart: always
     env_file: .env.production
     command: bundle exec sidekiq
