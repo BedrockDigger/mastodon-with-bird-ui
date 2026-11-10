@@ -526,10 +526,20 @@ for locale_file in "$MASTODON_PATH/config/locales"/*.yml; do
       orig_name="${existing_dark:-Mastodon}"
     fi
 
-    awk '/^  themes:/{in_themes=1} in_themes && /^    default:/{print "    default: Mastodon Bird UI"; in_themes=0; next} /^  [^ ]/{in_themes=0} 1' "$locale_file" > "$locale_file.tmp" && mv "$locale_file.tmp" "$locale_file"
+    awk '
+      /^  themes:/ { in_themes=1; print; next }
+      in_themes && /^    default:/ { print "    default: Mastodon Bird UI"; next }
+      in_themes && /^  [^ ]/ { in_themes=0 }
+      { print }
+    ' "$locale_file" > "$locale_file.tmp" && mv "$locale_file.tmp" "$locale_file"
     add_locale_entry "$locale_file" "mastodon-dark" "$orig_name" "$filename"
   else
-    awk '/^  themes:/{in_themes=1} in_themes && /^    default: Mastodon Bird UI/{print "    default: Mastodon"; in_themes=0; next} /^  [^ ]/{in_themes=0} 1' "$locale_file" > "$locale_file.tmp" && mv "$locale_file.tmp" "$locale_file"
+    awk '
+      /^  themes:/ { in_themes=1; print; next }
+      in_themes && /^    default: Mastodon Bird UI/ { print "    default: Mastodon"; next }
+      in_themes && /^  [^ ]/ { in_themes=0 }
+      { print }
+    ' "$locale_file" > "$locale_file.tmp" && mv "$locale_file.tmp" "$locale_file"
     add_locale_entry "$locale_file" "mastodon-bird-ui-auto" "Mastodon Bird UI" "$filename"
   fi
 
