@@ -65,14 +65,22 @@ mastodon-with-bird-ui/
 
 ## Setup Guide
 
-### 1. Repository Permissions (GHCR Access)
+### 1. Registry Authentication (GHCR Access)
 
-The workflow pushes images to the GitHub Container Registry (`ghcr.io`) using the built-in `GITHUB_TOKEN`.
+The workflow supports authenticating to GitHub Container Registry (`ghcr.io`) via either the built-in `GITHUB_TOKEN` or a Personal Access Token (`CR_PAT`):
 
+#### Option A: Built-in GITHUB_TOKEN
 1. In your GitHub repository, navigate to **Settings** > **Actions** > **General**.
 2. Under **Workflow permissions**, select **Read and write permissions**.
 3. Click **Save**.
-4. *(Optional)* After the first successful image push, go to your repository's **Packages** tab, select the container package, and under **Package settings**, configure visibility to **Public** if you want your container to be pullable without authentication.
+
+#### Option B: Personal Access Token (Classic) (Recommended if write_package is denied)
+If your account or organization policies restrict `GITHUB_TOKEN` from creating new root-level packages:
+1. Create a Personal Access Token (classic) at **GitHub Settings** > **Developer settings** > **Personal access tokens** > **Tokens (classic)**.
+2. Select scopes: `write:packages`, `read:packages`, and `delete:packages`.
+3. In this repository, go to **Settings** > **Secrets and variables** > **Actions**.
+4. Add a repository secret named **`CR_PAT`** with your token as the value.
+5. The workflow automatically detects and uses `secrets.CR_PAT` if present, falling back to `GITHUB_TOKEN`.
 
 ---
 
