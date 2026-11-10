@@ -519,7 +519,7 @@ for locale_file in "$MASTODON_PATH/config/locales"/*.yml; do
   # Set the 'default' locale label based on whether Bird UI is the default theme
   if [[ "$SET_DEFAULT" =~ ^[Yy]$ ]]; then
     # Grab original default name (e.g. Mastodon or ماستدون) and strip any quotes
-    orig_name=$(awk '/^[ ]+default:/{sub(/^[ ]+default:[ ]*/, ""); print; exit}' "$locale_file" | tr -d '"'\'')
+    orig_name=$(awk '/^[ ]+default:/{sub(/^[ ]+default:[ ]*/, ""); print; exit}' "$locale_file" | tr -d '\042\047')
     orig_name="${orig_name:-Mastodon}"
 
     awk '{ if ($0 ~ /^    default:/) print "    default: Mastodon Bird UI"; else print }' "$locale_file" > "$locale_file.tmp" && mv "$locale_file.tmp" "$locale_file"
